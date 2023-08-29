@@ -1,0 +1,6 @@
+tf/.terraform
+tf/*.tfstate.backup
+tf/*.tfstate
+tf/*.tfplan
+tf/*.zip
+

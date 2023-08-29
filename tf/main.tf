@@ -3,117 +3,106 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = ">= 4.67.0"
+      version = "~> 5.14"
     }
   }
 }
 
 variable "aws_region" {
-  type    = string
-  default = "ap-southeast-1"
+  type = map(any)
+  default = {
+    default = "us-east-1"
+    prod    = "ap-southeast-1"
+  }
 }
 
-variable "project" {
-  type    = string
-  default = "demo"
+variable "deployment_name" {
+  type = map(any)
+  default = {
+    default = "mypython_dev"
+    prod    = "mypython"
+  }
 }
 
-variable "environment" {
-  type    = string
-  default = "dev"
-}
-
-# Configure the AWS provider
 provider "aws" {
-  region = var.aws_region
+  region = var.aws_region[terraform.workspace]
 }
 
 data "archive_file" "lambda_zip" {
   type        = "zip"
-  source_file = "../lambda/main.py"
-  output_path = "../lambda/main.zip"
+  source_dir  = "../lambda"
+  output_path = "main.zip"
 }
 
-resource "aws_lambda_function" "my_lambda" {
+resource "aws_lambda_function" "mypython_lambda" {
   filename         = data.archive_file.lambda_zip.output_path
-  function_name    = "${var.project}_${var.environment}_my_lambda"
-  role             = aws_iam_role.my_lambda_role.arn
+  function_name    = "${var.deployment_name[terraform.workspace]}_lambda_test"
+  role             = aws_iam_role.mypython_lambda_role.arn
   handler          = "main.lambda_handler"
   runtime          = "python3.9"
-  source_code_hash = "data.archive_file.lambda_zip.output_base64sha256"
+  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
 }
 
-# Create an IAM role for Lambda
-resource "aws_iam_role" "my_lambda_role" {
-  name               = "my_lambda_role"
-  assume_role_policy = <<POLICY
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Action": "sts:AssumeRole",
-      "Principal": {
-        "Service": "lambda.amazonaws.com" 
-      },
-      "Effect": "Allow",
-      "Sid": ""
-    }
-  ]
-}
-  POLICY
-}
-
-# Create a custom IAM policy
-resource "aws_iam_policy" "read_sqs_queue_policy" {
-  name        = "my_lambda_role_policy"
-  description = "Policy for my_lambda"
-  policy      = <<POLICY
-{
-  "Version": "2012-10-17",
-  "Statement": [
+resource "aws_iam_role" "mypython_lambda_role" {
+  name               = "${var.deployment_name[terraform.workspace]}_role_test"
+  assume_role_policy = <<EOF
+  {
+    "Version": "2012-10-17",
+    "Statement": [
       {
-          "Effect": "Allow",
-          "Action": [
-              "sqs:ReceiveMessage",
-              "sqs:DeleteMessage",
-              "sqs:GetQueueAttributes"
-          ],
-          "Resource": "*"
+        "Action": "sts:AssumeRole",
+        "Principal": {
+          "Service": "lambda.amazonaws.com"
+        },
+        "Effect": "Allow",
+        "Sid": ""
       }
-  ]
-}
-  POLICY
-}
-
-# Attach one or more managed policies to the role
-resource "aws_iam_role_policy_attachment" "role_policy_attachment_managed" {
-  role = aws_iam_role.my_lambda_role.name
-  for_each = toset([
-    "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-  ])
-  policy_arn = each.value
+    ]
+  }
+  EOF
 }
 
-# Attach a custom policy to the role
-resource "aws_iam_role_policy_attachment" "role_policy_attachment_custom" {
-  role       = aws_iam_role.my_lambda_role.name
-  policy_arn = aws_iam_policy.read_sqs_queue_policy.arn
+data "aws_iam_policy_document" "mypython_lambda_role_policy_doc" {
+  statement {
+    actions = [
+      "sqs:ReceiveMessage",
+      "sqs:DeleteMessage",
+      "sqs:GetQueueAttributes"
+    ]
+    resources = [
+      aws_sqs_queue.main_queue.arn,
+    ]
+  }
 }
 
-resource "aws_sqs_queue" "my_queue" {
-  name             = "my-queue"
+resource "aws_iam_policy" "mypython_lambda_role_policy" {
+  name   = "${var.deployment_name[terraform.workspace]}_lambda_role_policy"
+  policy = data.aws_iam_policy_document.mypython_lambda_role_policy_doc.json
+}
+
+resource "aws_iam_role_policy_attachment" "mypython_lambda_policy_attachment" {
+  role       = aws_iam_role.mypython_lambda_role.name
+  policy_arn = aws_iam_policy.mypython_lambda_role_policy.arn
+}
+
+resource "aws_sqs_queue" "main_queue" {
+  name             = "${var.deployment_name[terraform.workspace]}-main-queue"
   delay_seconds    = 30
-  max_message_size = 262144
+  max_message_size = 2048
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.deadletter_queue.arn
+    maxReceiveCount     = 4
+  })
 }
 
-resource "aws_sqs_queue" "my_deadletter_queue" {
-  name             = "my-deadletter-queue"
+resource "aws_sqs_queue" "deadletter_queue" {
+  name             = "${var.deployment_name[terraform.workspace]}-deadletter-queue"
   delay_seconds    = 30
-  max_message_size = 262144
+  max_message_size = 2048
 }
 
-resource "aws_lambda_event_source_mapping" "my-sqs-my-lambda-trigger" {
-  event_source_arn = aws_sqs_queue.my_queue.arn
-  function_name    = aws_lambda_function.my_lambda.arn
+resource "aws_lambda_event_source_mapping" "sqs-lambda-trigger" {
+  event_source_arn = aws_sqs_queue.main_queue.arn
+  function_name    = aws_lambda_function.mypython_lambda.arn
 }
 
