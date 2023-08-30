@@ -1,32 +1,3 @@
-terraform {
-  required_version = ">= 0.12"
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.14"
-    }
-  }
-}
-
-variable "aws_region" {
-  type = map(any)
-  default = {
-    default = "us-east-1"
-    prod    = "ap-southeast-1"
-  }
-}
-
-variable "deployment_name" {
-  type = map(any)
-  default = {
-    default = "mypython_dev"
-    prod    = "mypython"
-  }
-}
-
-provider "aws" {
-  region = var.aws_region[terraform.workspace]
-}
 
 data "archive_file" "lambda_zip" {
   type        = "zip"
